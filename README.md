@@ -35,6 +35,20 @@ copy .env.example .env
 2. Запусти бота: `python bot.py`.
 3. Напиши своему боту `/id`, скопируй число в `.env` → `ADMIN_IDS` и перезапусти бота.
 
+## Деплой на VPS (Ubuntu 22.04/24.04)
+
+Бот работает как systemd-сервис: стартует вместе с сервером и перезапускается при сбое.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/artemsihov6-ux/barber-booking-bot/main/deploy/setup.sh -o setup.sh
+sudo bash setup.sh
+sudo nano /opt/barber-bot/.env        # BOT_TOKEN и ADMIN_IDS
+sudo systemctl start barber-bot
+```
+
+- Логи: `journalctl -u barber-bot -f`
+- Обновление до свежего кода: снова `sudo bash setup.sh`
+
 ## Настройка под клиента
 
 Открой `config.py`:
@@ -56,4 +70,7 @@ reminders.py    фоновые напоминания
 handlers/
   client.py     сценарий записи для клиента
   admin.py      команды мастера
+deploy/
+  setup.sh            установка/обновление на сервере
+  barber-bot.service  systemd-юнит
 ```
