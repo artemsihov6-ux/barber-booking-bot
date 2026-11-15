@@ -7,12 +7,25 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+
+def _ids(name: str) -> set[int]:
+    return {int(x) for x in os.getenv(name, "").replace(" ", "").split(",") if x}
+
+
+# --- Мессенджеры ---
+TG = "tg"
+MAX = "max"
+PLATFORM_TITLES = {TG: "Telegram", MAX: "MAX"}
+
 # --- Секреты и окружение (берутся из .env) ---
+# Запускаются те боты, для которых задан токен: Telegram, MAX или оба сразу.
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
-ADMIN_IDS = {
-    int(x) for x in os.getenv("ADMIN_IDS", "").replace(" ", "").split(",") if x
-}
-TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow"))
+ADMIN_IDS = _ids("ADMIN_IDS")
+MAX_BOT_TOKEN = os.getenv("MAX_BOT_TOKEN", "").strip()
+MAX_ADMIN_IDS = _ids("MAX_ADMIN_IDS")
+ADMINS = {TG: ADMIN_IDS, MAX: MAX_ADMIN_IDS}
+TZ =ZoneInfo(os.getenv("TIMEZONE", "Europe/Moscow"))
 DB_PATH = os.getenv("DB_PATH", "bookings.db")
 
 # --- Информация о бизнесе ---

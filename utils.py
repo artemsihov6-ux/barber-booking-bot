@@ -1,12 +1,8 @@
-"""Общие помощники: текущее время, форматирование дат, уведомления админам."""
-import logging
+"""Общие помощники: текущее время, форматирование дат, разбор телефона."""
+import re
 from datetime import date, datetime
 
-from aiogram import Bot
-
 import config
-
-log = logging.getLogger(__name__)
 
 WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 MONTHS = [
@@ -33,9 +29,9 @@ def from_ts(ts: int) -> datetime:
     return datetime.fromtimestamp(ts, config.TZ)
 
 
-async def notify_admins(bot: Bot, text: str) -> None:
-    for admin_id in config.ADMIN_IDS:
-        try:
-            await bot.send_message(admin_id, text)
-        except Exception as e:  # админ мог не запустить бота или заблокировать его
-            log.warning("Не удалось уведомить админа %s: %s", admin_id, e)
+def normalize_phone(raw: str) -> str | None:
+    """Телефон в виде '+7…' или None, если на номер это не похоже."""
+    digits = re.sub(r"\D", "", raw)
+    if not 10 <= len(digits) <= 15:
+        return None
+    return raw.strip() if raw.strip().startswith("+") else f"+{digits}"

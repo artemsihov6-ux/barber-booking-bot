@@ -1,32 +1,25 @@
 """Клиентская часть: меню, запись (услуга → день → время → имя → телефон → подтверждение),
 просмотр и отмена своих записей."""
-import asyncio
-import html
-import re
-import time as time_mod
 from datetime import date, datetime, time
 
-from aiogram import Bot, F, Router
+from aiogram import F, Router
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
 
+import booking
 import config
-import db
+import views
 from keyboards import (
     BTN_BOOK, BTN_CONTACTS, BTN_MY, BTN_PRICES,
     BackCb, CancelCb, ConfirmCb, DateCb, ServiceCb, TimeCb,
-    confirm_kb, dates_kb, main_menu, phone_kb, services_kb, times_kb,
+    cancel_list_kb, confirm_kb, dates_kb, main_menu, phone_kb, services_kb, times_kb,
 )
 from slots import free_slots, is_free, working_dates
-from utils import fmt_date, fmt_dt, from_ts, notify_admins
-from views import booking_summary, render_admin_list, render_user_list, service_title
+from utils import fmt_dt, normalize_phone
 
 router = Router()
-
-# Защита от двойного бронирования, если двое жмут «Подтвердить» одновременно.
-booking_lock = asyncio.Lock()
 
 
 class Booking(StatesGroup):
@@ -40,12 +33,7 @@ class Booking(StatesGroup):
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer(
-        f"Привет, {html.escape(message.from_user.first_name)}! 👋\n"
-        f"Я бот записи в <b>{config.BUSINESS_NAME}</b>.\n\n"
-        "Запишитесь в пару нажатий, а я напомню о визите заранее.",
-        reply_markup=main_menu(),
-    )
+    await message.answer(views.welcome(message.from_user.first_name), reply_markup=main_menu())
 
 
 @router.message(Command("id"))
@@ -55,19 +43,12 @@ async def cmd_id(message: Message) -> None:
 
 @router.message(F.text == BTN_PRICES)
 async def show_prices(message: Message) -> None:
-    lines = ["💈 <b>Услуги и цены</b>", ""]
-    lines += [f"• {s.title} — <b>{s.price} ₽</b> ({s.duration} мин)" for s in config.SERVICES]
-    await message.answer("\n".join(lines))
+    await message.answer(views.prices())
 
 
 @router.message(F.text == BTN_CONTACTS)
 async def show_contacts(message: Message) -> None:
-    await message.answer(
-        f"📍 <b>{config.BUSINESS_NAME}</b>\n"
-        f"Адрес: {config.ADDRESS}\n"
-        f"Телефон: {config.PHONE}\n"
-        f"Работаем: {config.WORK_START_HOUR}:00–{config.WORK_END_HOUR}:00"
-    )
+    await message.answer(views.contacts())
 
 
 # ---------- Запись: выбор услуги, дня и времени ----------
@@ -92,15 +73,9 @@ async def _session_expired(callback: CallbackQuery, state: FSMContext) -> None:
 async def _show_dates(callback: CallbackQuery, service: config.Service) -> None:
     dates = [d for d in working_dates() if await free_slots(d, service.duration)]
     if not dates:
-        await callback.message.edit_text(
-            "😔 На ближайшие дни свободных окон нет. Попробуйте позже или позвоните нам: "
-            + config.PHONE
-        )
+        await callback.message.edit_text(views.NO_FREE_DAYS)
         return
-    await callback.message.edit_text(
-        f"<b>{service.title}</b> — {service.price} ₽\n\nВыберите день:",
-        reply_markup=dates_kb(dates),
-    )
+    await callback.message.edit_text(views.pick_day(service), reply_markup=dates_kb(dates))
 
 
 @router.callback_query(ServiceCb.filter())
@@ -141,10 +116,7 @@ async def pick_date(callback: CallbackQuery, callback_data: DateCb, state: FSMCo
         await _show_dates(callback, service)
         return
     await state.update_data(day=day.isoformat())
-    await callback.message.edit_text(
-        f"<b>{service.title}</b>, {fmt_date(day)}\n\nВыберите время:",
-        reply_markup=times_kb(slots),
-    )
+    await callback.message.edit_text(views.pick_time(service, day), reply_markup=times_kb(slots))
     await callback.answer()
 
 
@@ -193,32 +165,20 @@ async def enter_name(message: Message, state: FSMContext) -> None:
 
 @router.message(Booking.phone, F.contact | F.text)
 async def enter_phone(message: Message, state: FSMContext) -> None:
-    raw = message.contact.phone_number if message.contact else message.text
-    digits = re.sub(r"\D", "", raw)
-    if not 10 <= len(digits) <= 15:
+    phone = normalize_phone(message.contact.phone_number if message.contact else message.text)
+    if not phone:
         await message.answer("Похоже, номер некорректный. Пример: +7 900 123-45-67")
         return
-    phone = raw.strip() if raw.strip().startswith("+") else f"+{digits}"
-    await state.update_data(phone=phone)
+    data = await state.update_data(phone=phone)
     await state.set_state(Booking.confirm)
 
-    data = await state.get_data()
-    service = config.SERVICES_BY_ID[data["service_id"]]
-    start = from_ts(data["start_ts"])
     await message.answer("Номер сохранён ✅", reply_markup=ReplyKeyboardRemove())
-    await message.answer(
-        "<b>Проверьте запись:</b>\n\n"
-        f"💈 {service.title} — {service.price} ₽\n"
-        f"🗓 {fmt_dt(start)}\n"
-        f"👤 {html.escape(data['client_name'])}\n"
-        f"📞 {html.escape(phone)}",
-        reply_markup=confirm_kb(),
-    )
+    await message.answer(views.check(data), reply_markup=confirm_kb())
 
 
 @router.callback_query(ConfirmCb.filter(), Booking.confirm)
 async def confirm_booking(
-    callback: CallbackQuery, callback_data: ConfirmCb, state: FSMContext, bot: Bot,
+    callback: CallbackQuery, callback_data: ConfirmCb, state: FSMContext,
 ) -> None:
     if callback_data.action != "yes":
         await state.clear()
@@ -228,42 +188,18 @@ async def confirm_booking(
         return
 
     data = await state.get_data()
-    service = config.SERVICES_BY_ID[data["service_id"]]
-    start = from_ts(data["start_ts"])
-
-    async with booking_lock:
-        if not await is_free(start, service.duration):
-            await state.clear()
-            await callback.message.edit_text("😔 Увы, это время только что заняли. Начните запись заново.")
-            await callback.message.answer("Главное меню:", reply_markup=main_menu())
-            await callback.answer()
-            return
-        # если до визита меньше окна напоминания, отдельное напоминание не нужно
-        too_soon = data["start_ts"] - time_mod.time() <= config.REMIND_BEFORE_MIN * 60
-        booking_id = await db.create_booking(
-            user_id=callback.from_user.id,
-            client_name=data["client_name"],
-            phone=data["phone"],
-            service_id=service.id,
-            start_ts=data["start_ts"],
-            duration=service.duration,
-            reminded=too_soon,
-        )
-
     await state.clear()
-    await callback.message.edit_text(
-        f"✅ <b>Вы записаны!</b> (запись #{booking_id})\n\n"
-        f"💈 {service.title}\n🗓 {fmt_dt(start)}\n📍 {config.ADDRESS}\n\n"
-        "Напомню о визите заранее. Отменить можно в разделе «🗂 Мои записи»."
+    created = await booking.create(
+        platform=config.TG,
+        user_id=callback.from_user.id,
+        client_name=data["client_name"],
+        phone=data["phone"],
+        service=config.SERVICES_BY_ID[data["service_id"]],
+        start_ts=data["start_ts"],
     )
+    await callback.message.edit_text(views.booked(created) if created else views.SLOT_TAKEN)
     await callback.message.answer("Главное меню:", reply_markup=main_menu())
-    await callback.answer("Готово!")
-    await notify_admins(
-        bot,
-        f"🆕 <b>Новая запись #{booking_id}</b>\n"
-        f"💈 {service.title}\n🗓 {fmt_dt(start)}\n"
-        f"👤 {html.escape(data['client_name'])}, 📞 {html.escape(data['phone'])}",
-    )
+    await callback.answer("Готово!" if created else None)
 
 
 @router.callback_query(ConfirmCb.filter())
@@ -276,44 +212,27 @@ async def confirm_stale(callback: CallbackQuery, state: FSMContext) -> None:
 @router.message(F.text == BTN_MY)
 @router.message(Command("my"))
 async def my_bookings(message: Message) -> None:
-    text, kb = await render_user_list(message.from_user.id)
-    await message.answer(text, reply_markup=kb)
+    text, items = await views.user_list(config.TG, message.from_user.id)
+    await message.answer(text, reply_markup=cancel_list_kb(items))
 
 
 @router.callback_query(CancelCb.filter())
-async def cancel_booking(callback: CallbackQuery, callback_data: CancelCb, bot: Bot) -> None:
-    booking = await db.get_booking(callback_data.id)
+async def cancel_booking(callback: CallbackQuery, callback_data: CancelCb) -> None:
     user_id = callback.from_user.id
-    is_owner = booking is not None and booking["user_id"] == user_id
-    is_admin = user_id in config.ADMIN_IDS
-
-    if booking is None or not (is_owner or is_admin):
+    result = await booking.cancel(callback_data.id, config.TG, user_id)
+    if result is booking.Cancel.NOT_FOUND:
         await callback.answer("Запись не найдена", show_alert=True)
         return
-    if not await db.cancel_booking(booking["id"]):
+    if result is booking.Cancel.ALREADY:
         await callback.answer("Эта запись уже отменена", show_alert=True)
         return
 
     await callback.answer("Запись отменена")
-    text, kb = await (render_user_list(user_id) if is_owner else render_admin_list())
-    await callback.message.edit_text(text, reply_markup=kb)
-
-    summary = booking_summary(booking)
-    if is_owner:
-        await notify_admins(
-            bot,
-            f"❌ <b>Клиент отменил запись</b>\n{summary}\n"
-            f"👤 {html.escape(booking['client_name'])}, 📞 {html.escape(booking['phone'])}",
-        )
+    if result is booking.Cancel.BY_OWNER:
+        text, items = await views.user_list(config.TG, user_id)
     else:
-        try:
-            await bot.send_message(
-                booking["user_id"],
-                f"❌ Ваша запись отменена мастером:\n{summary}\n\n"
-                f"Вопросы можно задать по телефону {config.PHONE}",
-            )
-        except Exception:
-            pass  # клиент мог заблокировать бота
+        text, items = await views.admin_list()
+    await callback.message.edit_text(text, reply_markup=cancel_list_kb(items))
 
 
 # ---------- Всё остальное ----------

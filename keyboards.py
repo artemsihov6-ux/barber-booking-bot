@@ -95,7 +95,9 @@ def confirm_kb() -> InlineKeyboardMarkup:
     return b.as_markup()
 
 
-def cancel_list_kb(bookings: list[dict]) -> InlineKeyboardMarkup:
+def cancel_list_kb(bookings: list[dict]) -> InlineKeyboardMarkup | None:
+    if not bookings:
+        return None
     b = InlineKeyboardBuilder()
     for item in bookings:
         b.button(text=f"❌ Отменить #{item['id']}", callback_data=CancelCb(id=item["id"]))

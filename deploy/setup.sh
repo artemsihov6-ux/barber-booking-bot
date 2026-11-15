@@ -39,7 +39,7 @@ systemctl enable "$SERVICE" >/dev/null
 
 if [ "$FIRST_RUN" = 1 ]; then
     echo
-    echo "Готово. Заполни $APP_DIR/.env (BOT_TOKEN, ADMIN_IDS) и запусти:"
+    echo "Готово. Заполни $APP_DIR/.env (токены и ID админов для Telegram и/или MAX) и запусти:"
     echo "  systemctl start $SERVICE"
 else
     systemctl restart "$SERVICE"

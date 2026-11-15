@@ -8,7 +8,8 @@ import config
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS bookings (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     INTEGER NOT NULL,
+    platform    TEXT    NOT NULL DEFAULT 'tg',      -- tg | max: где клиент оформил запись
+    user_id     INTEGER NOT NULL,          -- ID клиента в этом мессенджере
     client_name TEXT    NOT NULL,
     phone       TEXT    NOT NULL,
     service_id  TEXT    NOT NULL,
@@ -26,6 +27,11 @@ CREATE INDEX IF NOT EXISTS idx_bookings_user ON bookings(user_id);
 async def init_db() -> None:
     async with aiosqlite.connect(config.DB_PATH) as db:
         await db.executescript(SCHEMA)
+        # База, созданная до появления MAX: все старые записи пришли из Telegram.
+        async with db.execute("PRAGMA table_info(bookings)") as cur:
+            columns = {row[1] for row in await cur.fetchall()}
+        if "platform" not in columns:
+            await db.execute("ALTER TABLE bookings ADD COLUMN platform TEXT NOT NULL DEFAULT 'tg'")
         await db.commit()
 
 
@@ -45,6 +51,7 @@ async def _execute(query: str, params: tuple = ()) -> tuple[int, int]:
 
 
 async def bookings_between(start_ts: int, end_ts: int) -> list[dict]:
+    """Занятые интервалы из всех мессенджеров: расписание у мастера одно."""
     return await _fetch(
         "SELECT * FROM bookings WHERE status = 'active' AND start_ts >= ? AND start_ts < ?",
         (start_ts, end_ts),
@@ -52,14 +59,15 @@ async def bookings_between(start_ts: int, end_ts: int) -> list[dict]:
 
 
 async def create_booking(
-    user_id: int, client_name: str, phone: str, service_id: str,
+    platform: str, user_id: int, client_name: str, phone: str, service_id: str,
     start_ts: int, duration: int, reminded: bool,
 ) -> int:
     booking_id, _ = await _execute(
         """INSERT INTO bookings
-           (user_id, client_name, phone, service_id, start_ts, duration, reminded, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (user_id, client_name, phone, service_id, start_ts, duration,
+           (platform, user_id, client_name, phone, service_id, start_ts, duration,
+            reminded, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (platform, user_id, client_name, phone, service_id, start_ts, duration,
          int(reminded), int(time.time())),
     )
     return booking_id
@@ -70,12 +78,12 @@ async def get_booking(booking_id: int) -> dict | None:
     return rows[0] if rows else None
 
 
-async def user_upcoming(user_id: int, now_ts: int) -> list[dict]:
+async def user_upcoming(platform: str, user_id: int, now_ts: int) -> list[dict]:
     return await _fetch(
         """SELECT * FROM bookings
-           WHERE user_id = ? AND status = 'active' AND start_ts > ?
+           WHERE platform = ? AND user_id = ? AND status = 'active' AND start_ts > ?
            ORDER BY start_ts""",
-        (user_id, now_ts),
+        (platform, user_id, now_ts),
     )
 
 
@@ -96,11 +104,15 @@ async def cancel_booking(booking_id: int) -> bool:
     return changed > 0
 
 
-async def due_reminders(now_ts: int, until_ts: int) -> list[dict]:
+async def due_reminders(platforms: list[str], now_ts: int, until_ts: int) -> list[dict]:
+    if not platforms:
+        return []
+    marks = ", ".join("?" * len(platforms))
     return await _fetch(
-        """SELECT * FROM bookings
-           WHERE status = 'active' AND reminded = 0 AND start_ts > ? AND start_ts <= ?""",
-        (now_ts, until_ts),
+        f"""SELECT * FROM bookings
+            WHERE platform IN ({marks}) AND status = 'active' AND reminded = 0
+              AND start_ts > ? AND start_ts <= ?""",
+        (*platforms, now_ts, until_ts),
     )
 
 

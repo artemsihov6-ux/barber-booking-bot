@@ -1,5 +1,5 @@
 [Unit]
-Description=Barber booking Telegram bot
+Description=Barber booking bot (Telegram + MAX)
 After=network-online.target
 Wants=network-online.target
 
